@@ -42,8 +42,12 @@ func fingerprintSelf() exeFingerprint {
 }
 
 // fetchLatestVersion 按序尝试 versionCheckURLs（jsDelivr 国内可达优先）
+// fetchLatestVersion 并发/按序尝试 versionCheckURLs 全部镜像，
+// 取「所有成功响应里的最大版本号」——任何一个源看到新版本都算数，
+// 避免单个 CDN 边缘节点缓存陈旧导致自更新被卡住。
 func fetchLatestVersion() string {
 	client := &http.Client{Timeout: 5 * time.Second}
+	latest := ""
 	for _, u := range versionCheckURLs {
 		resp, err := client.Get(u)
 		if err != nil {
@@ -54,9 +58,12 @@ func fetchLatestVersion() string {
 		if err != nil || resp.StatusCode != http.StatusOK {
 			continue
 		}
-		return strings.TrimSpace(string(body))
+		v := strings.TrimSpace(string(body))
+		if v != "" && (latest == "" || isNewer(latest, v)) {
+			latest = v
+		}
 	}
-	return ""
+	return latest
 }
 
 // isNewer 数值比较版本号（"0.7.3" > "0.7.2"；解析失败视为不更新）
