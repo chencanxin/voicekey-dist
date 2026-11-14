@@ -112,11 +112,29 @@ func fetchLatestVersion() string {
 	return latest
 }
 
-// isNewer 数值比较版本号（"0.7.3" > "0.7.2"；解析失败视为不更新）
+// isNewer 逐段数值比较 x.y.z 风格版本号（"0.7.10" > "0.7.9"；
+// 段数不足补 0，解析失败的段按 0 处理）。不能用 ParseFloat：
+// "0.7.7" 有两个小数点会直接报 invalid syntax。
 func isNewer(cur, latest string) bool {
-	c, err1 := strconv.ParseFloat(cur, 64)
-	l, err2 := strconv.ParseFloat(latest, 64)
-	return err1 == nil && err2 == nil && l > c
+	cp := strings.Split(cur, ".")
+	lp := strings.Split(latest, ".")
+	n := len(cp)
+	if len(lp) > n {
+		n = len(lp)
+	}
+	for i := 0; i < n; i++ {
+		var c, l int
+		if i < len(cp) {
+			c, _ = strconv.Atoi(strings.TrimSpace(cp[i]))
+		}
+		if i < len(lp) {
+			l, _ = strconv.Atoi(strings.TrimSpace(lp[i]))
+		}
+		if l != c {
+			return l > c
+		}
+	}
+	return false
 }
 
 // lastUpdateCheck 最近一次版本检查的结果（/diag 直读，联调不再靠猜）
