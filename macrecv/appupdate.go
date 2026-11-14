@@ -12,6 +12,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -130,8 +132,42 @@ func appUpdateHandler(w http.ResponseWriter, r *http.Request) {
 		info.VersionCode, info.VersionName, info.ApkURL, info.Changelog, host)
 }
 
-// appApkHandler GET /app-apk → 代理下载 APK（手机直连 GitHub 不稳时的中转）
+// localAPKCandidates 本地 APK 候选路径（优先 ~/.voicekey/VoiceKey.apk）。
+// 命中本地文件就直接局域网内发给手机，完全不依赖外网/GitHub。
+func localAPKCandidates() []string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	return []string{
+		filepath.Join(home, ".voicekey", "VoiceKey.apk"),
+		filepath.Join(home, "Library", "Application Support", "voicekey", "VoiceKey.apk"),
+	}
+}
+
+// findLocalAPK 返回第一个存在的本地 APK 路径
+func findLocalAPK() string {
+	for _, p := range localAPKCandidates() {
+		if st, err := os.Stat(p); err == nil && st.Mode().IsRegular() && st.Size() > 1<<20 {
+			return p
+		}
+	}
+	return ""
+}
+
+// appApkHandler GET /app-apk → 优先本地文件直发（局域网），缺失时回退代理远程 apkUrl
 func appApkHandler(w http.ResponseWriter, r *http.Request) {
+	if local := findLocalAPK(); local != "" {
+		ver := "local"
+		if info, err := fetchAppUpdate(); err == nil {
+			ver = info.VersionName
+		}
+		w.Header().Set("Content-Type", "application/vnd.android.package-archive")
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=voicekey-%s.apk", ver))
+		log.Println("App 更新下载：使用本地 APK", local)
+		http.ServeFile(w, r, local)
+		return
+	}
 	info, err := fetchAppUpdate()
 	if err != nil || info.ApkURL == "" {
 		http.Error(w, "no apk url", http.StatusServiceUnavailable)
