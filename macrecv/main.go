@@ -34,7 +34,7 @@ import (
 const preferredPort = 7979
 
 // version 当前版本，与发布仓库 voicekey-dist 根目录的 version.txt 对应
-const version = "0.7.10"
+const version = "0.7.12"
 
 // versionCheckURLs 版本检查地址。fetchLatestVersion 会取所有成功响应中的
 // 最大版本号，单个源陈旧不影响判定。api.github.com 最快最新排首位，
