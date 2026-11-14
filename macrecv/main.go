@@ -34,7 +34,7 @@ import (
 const preferredPort = 7979
 
 // version 当前版本，与发布仓库 voicekey-dist 根目录的 version.txt 对应
-const version = "0.7.1"
+const version = "0.7.2"
 
 // versionCheckURLs 按顺序尝试的版本检查地址（jsDelivr 国内可达优先）
 var versionCheckURLs = []string{
@@ -43,10 +43,9 @@ var versionCheckURLs = []string{
 	"https://raw.githubusercontent.com/chencanxin/voicekey-dist/main/version.txt",
 }
 
-// ---- 自动更新检查 ----
-// 启动后异步检查公开仓库 version.txt；发现新版本则通过 Homebrew 升级。
-// brew 升级会拉源码在本地重新构建（见 tap 仓库 Formula）。
-// 任何失败只记日志，不影响本次运行。
+// ---- 自动更新检查（详见 selfupdate.go 的 60 秒自更新循环） ----
+// checkUpdate 启动时立即查一次版本并提示；自更新循环 selfUpdateLoop 负责
+// 后续每 60 秒轮询 + brew upgrade + 自重启。
 
 func checkUpdate() {
 	var latest string
@@ -359,7 +358,7 @@ mes.onmessage = e => {
 func main() {
 	initDiagLog()
 	log.Printf("VoiceKey Mac 端 v%s", version)
-	go checkUpdate() // 异步检查更新，失败不影响运行
+	go selfUpdateLoop() // 60 秒轮询自更新：发现新版本 → brew upgrade → 自重启
 
 	// 数据端口：优先 7979，被占用则用系统分配的空闲端口（mDNS 广播此端口）
 	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", preferredPort))
