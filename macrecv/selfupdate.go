@@ -184,9 +184,18 @@ func selfUpdateLoop() {
 			recordUpdateCheck(latest, "skipped-no-brew")
 			return
 		}
+		// 升级前先同步 tap 元数据：brew 自动更新有 5 分钟节流，
+		// 后台进程常拿到旧 Formula 导致 "already installed" 空转。
+		fullPath := "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+		if out, err := exec.Command(brewPath, "--repository", "chencanxin/tap").Output(); err == nil {
+			pull := exec.Command("git", "-C", strings.TrimSpace(string(out)), "pull", "--ff-only")
+			pull.Env = append(os.Environ(), "PATH="+fullPath)
+			if err := pull.Run(); err != nil {
+				log.Println("自更新：同步 tap 失败（继续用现有元数据）:", err)
+			}
+		}
 		cmd := exec.Command(brewPath, "upgrade", "voicekey")
 		// 给 brew 一个完整 PATH，不受父进程环境（launchd/自更新重启链）影响
-		fullPath := "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 		cmd.Env = append(os.Environ(), "PATH="+fullPath)
 		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 		if err := cmd.Run(); err != nil {
