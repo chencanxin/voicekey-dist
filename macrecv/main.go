@@ -1,16 +1,19 @@
 package main
 
-// VoiceKey Mac 接收端（带网页仪表盘）
+// VoiceKey Mac 接收端（带网页仪表盘 + 实时同显）
 // 1. 自动选端口：优先 7979，被占用则随机分配
 // 2. mDNS 广播 _voicekey._tcp（端口随实际值，手机端自动发现）
 // 3. 接收 Base64(UTF-8) 文本 → pbcopy 写剪贴板 → osascript 模拟 ⌘V
-// 4. 本地网页仪表盘：启动自动弹浏览器，实时显示连接状态与接收记录
+//    行首 R: 前缀表示全选替换（⌘A + ⌘V），用于"手机改完一次性发回"
+// 4. 实时同显：轮询前台 App 聚焦输入框文本，经 /mirror 与 /mirror/events 推送
+// 5. 本地网页仪表盘：启动自动弹浏览器，实时显示连接状态与接收记录
 //
 // 注意: 首次运行后需在 系统设置 → 隐私与安全性 → 辅助功能 勾选本程序。
 
 import (
 	"bufio"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"io"
@@ -22,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/hashicorp/mdns"
@@ -30,7 +34,7 @@ import (
 const preferredPort = 7979
 
 // version 当前版本，与发布仓库 voicekey-dist 根目录的 version.txt 对应
-const version = "0.4.0"
+const version = "0.7.1"
 
 // versionCheckURLs 按顺序尝试的版本检查地址（jsDelivr 国内可达优先）
 var versionCheckURLs = []string{
@@ -139,8 +143,13 @@ func eventsHandler(w http.ResponseWriter, r *http.Request) {
 
 // ---- 核心功能 ----
 
-func paste(text string) {
+func paste(text string, replace bool) {
+	// 修复: pbcopy 在 C/POSIX locale（如 launchd/后台进程环境）下会静默丢弃
+	// 非 ASCII 字符，导致中文永远进不了剪贴板。必须显式指定 UTF-8 locale。
+	utf8Env := append(os.Environ(), "LANG=en_US.UTF-8", "LC_ALL=en_US.UTF-8")
+
 	pbcopy := exec.Command("pbcopy")
+	pbcopy.Env = utf8Env
 	stdin, _ := pbcopy.StdinPipe()
 	stdin.Write([]byte(text))
 	stdin.Close()
@@ -148,13 +157,40 @@ func paste(text string) {
 		log.Println("pbcopy 失败:", err)
 		return
 	}
-	osa := exec.Command("osascript", "-e",
-		`tell application "System Events" to keystroke "v" using command down`)
-	if err := osa.Run(); err != nil {
-		log.Println("模拟粘贴失败（检查辅助功能权限）:", err)
+
+	// 回读校验：剪贴板为空说明写入没生效（locale/会话问题），
+	// 此时再模拟 ⌘V 只会粘贴出旧内容，直接报失败。
+	if out, _ := exec.Command("pbpaste").Output(); text != "" && len(out) == 0 {
+		log.Println("剪贴板写入校验失败（pbpaste 为空），已跳过本次粘贴")
+		return
 	}
-	log.Printf("已粘贴: %s", text)
+
+	// CGEvent 发送按键需要辅助功能授权；未授权时静默无效果，提前拦截报错
+	if !axTrusted() {
+		log.Println("模拟粘贴失败（辅助功能权限未授予：系统设置 → 隐私与安全性 → 辅助功能 → 勾选 /opt/homebrew/bin/voicekey）")
+		return
+	}
+	if replace {
+		// 替换语义：先 ⌘A 全选聚焦输入框，再 ⌘V 覆盖
+		postCmdKey(vkANSI_A)
+		time.Sleep(40 * time.Millisecond)
+	}
+	postCmdKey(vkANSI_V)
+	app, _, _ := focusedFieldText()
+	suffix := ""
+	if replace {
+		suffix = "，已全选替换"
+	}
+	log.Printf("已粘贴: %s（前台: %s%s）", text, app, suffix)
 	publish(event{Time: time.Now().Format("15:04:05"), Text: text})
+}
+
+func remoteIP(conn net.Conn) string {
+	host, _, err := net.SplitHostPort(conn.RemoteAddr().String())
+	if err != nil {
+		return conn.RemoteAddr().String()
+	}
+	return host
 }
 
 func handle(conn net.Conn) {
@@ -163,14 +199,88 @@ func handle(conn net.Conn) {
 	if err != nil {
 		return
 	}
-	raw, err := base64.StdEncoding.DecodeString(line[:len(line)-1])
+	s := strings.TrimRight(line, "\n")
+	from := remoteIP(conn)
+
+	// v0.6 控制帧：K: 单键 / C: 组合键 / T: 触控板（不走 base64、不进历史）
+	// v0.7 L: 帧：安卓端日志上行（base64 的一行日志文本），供 /diag 直读
+	switch {
+	case strings.HasPrefix(s, "L:"):
+		countFrame("log")
+		raw, err := base64.StdEncoding.DecodeString(s[2:])
+		if err != nil {
+			log.Printf("日志帧解码失败（来自 %s）: %v", from, err)
+			return
+		}
+		recordAppLog(string(raw), from)
+		return
+	case strings.HasPrefix(s, "K:"):
+		countFrame("key")
+		if err := handleKeyFrame(s[2:]); err != nil {
+			log.Printf("按键帧失败（来自 %s）: %v", from, err)
+			return
+		}
+		log.Printf("按键: %s（来自 %s）", s[2:], from)
+		return
+	case strings.HasPrefix(s, "C:"):
+		countFrame("combo")
+		if err := handleComboFrame(s[2:]); err != nil {
+			log.Printf("组合键帧失败（来自 %s）: %v", from, err)
+			return
+		}
+		log.Printf("组合键: %s（来自 %s）", s[2:], from)
+		return
+	case strings.HasPrefix(s, "T:"):
+		countFrame("touch")
+		if err := handleTouchFrame(s[2:]); err != nil {
+			log.Printf("触控帧失败（来自 %s）: %v", from, err)
+			return
+		}
+		if !strings.HasPrefix(s[2:], "m:") { // 移动帧太密，只在计数里
+			log.Printf("触控: %s（来自 %s）", summary(s, 40), from)
+		}
+		return
+	}
+
+	// 协议：R:<base64> 全选替换；<base64> 光标处粘贴
+	replace := false
+	if strings.HasPrefix(s, "R:") {
+		replace = true
+		s = s[2:]
+	}
+	raw, err := base64.StdEncoding.DecodeString(s)
 	if err != nil {
 		log.Println("Base64 解码失败:", err)
 		return
 	}
-	paste(string(raw))
+	countFrame("text")
+	recordHistory(string(raw))
+	paste(string(raw), replace)
 }
 
+
+// selfRestartWatchdog 自愈看门狗：启动时未获辅助功能授权则周期性自重启。
+// macOS 对运行中的进程缓存权限查询结果，用户勾选授权后已运行的进程拿不到，
+// 必须换进程镜像。每 60 秒 exec 重启自己一次，直到启动时检测到已授权。
+func selfRestartWatchdog() {
+	if axTrusted() {
+		return
+	}
+	log.Println("看门狗：等待辅助功能授权，每 60 秒自动重启进程直到授权生效")
+	ticker := time.NewTicker(60 * time.Second)
+	for range ticker.C {
+		if axTrusted() {
+			log.Println("看门狗：检测到授权状态变化，重启进程使其生效")
+		} else {
+			log.Println("看门狗：仍未授权，重启进程重试")
+		}
+		self, err := os.Executable()
+		if err != nil {
+			continue
+		}
+		syscall.Exec(self, os.Args, os.Environ()) // 成功则不再返回
+	}
+}
 
 // startMDNS 广播 _voicekey._tcp 服务
 func startMDNS(port int) (*mdns.Server, error) {
@@ -213,6 +323,12 @@ var page = template.Must(template.New("ui").Parse(`<!DOCTYPE html>
   <div class="dim" style="margin-top:8px">手机端打开 App 会自动搜索到这台 Mac，无需填写 IP。</div>
 </div>
 <div class="card">
+  <b>实时同显</b>
+  <div style="margin-top:8px">前台 App：<span class="mono" id="mApp">—</span>
+       &nbsp; 焦点：<span id="mFocus" class="dim">检测中…</span></div>
+  <div class="dim" style="margin-top:8px; white-space:pre-wrap" id="mText"></div>
+</div>
+<div class="card">
   <b>接收记录</b>
   <div id="log"><div class="dim">等待手机发送…</div></div>
 </div>
@@ -227,11 +343,21 @@ es.onmessage = e => {
   div.innerHTML = "<time>" + d.time + "</time>" + d.text.replace(/</g, "&lt;");
   log.prepend(div);
 };
+const mes = new EventSource("/mirror/events");
+mes.onmessage = e => {
+  const d = JSON.parse(e.data);
+  document.getElementById("mApp").textContent = d.app || "—";
+  const f = document.getElementById("mFocus");
+  f.textContent = d.focused ? "输入框已捕获" : "无文本焦点";
+  f.className = d.focused ? "ok" : "dim";
+  document.getElementById("mText").textContent = d.focused ? d.text : "（点击任意输入框开始同显）";
+};
 </script>
 </body>
 </html>`))
 
 func main() {
+	initDiagLog()
 	log.Printf("VoiceKey Mac 端 v%s", version)
 	go checkUpdate() // 异步检查更新，失败不影响运行
 
@@ -263,15 +389,38 @@ func main() {
 		defer mdnsServer.Shutdown()
 	}
 
-	// 网页仪表盘
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	// 网页仪表盘（全部经访问日志中间件，联调可查）
+	http.HandleFunc("/", withAccessLog(func(w http.ResponseWriter, r *http.Request) {
 		page.Execute(w, map[string]any{"Port": port, "Start": startAt})
-	})
-	http.HandleFunc("/events", eventsHandler)
+	}))
+	http.HandleFunc("/events", withAccessLog(eventsHandler))
+	http.HandleFunc("/mirror", withAccessLog(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		json.NewEncoder(w).Encode(mirrorSnapshot())
+	}))
+	http.HandleFunc("/mirror/events", withAccessLog(mirrorEventsHandler))
+	http.HandleFunc("/history", withAccessLog(historyHandler))
+	http.HandleFunc("/app-update", withAccessLog(appUpdateHandler))
+	http.HandleFunc("/app-apk", withAccessLog(appApkHandler))
+	http.HandleFunc("/diag", withAccessLog(diagHandler))
+	http.HandleFunc("/push/events", withAccessLog(pushEventsHandler))
 	go http.Serve(uiLn, nil)
 
+	// 发送历史持久化（~/.voicekey/history.jsonl）
+	loadHistory()
+
+	// 实时同显：轮询前台聚焦输入框（与 ⌘V 模拟共用辅助功能权限）
+	if axTrusted() {
+		log.Println("实时同显：辅助功能权限已授予")
+	} else {
+		log.Println("实时同显：等待辅助功能权限（系统设置 → 隐私与安全性 → 辅助功能 → 勾选 /opt/homebrew/bin/voicekey），授权后自动生效")
+		go selfRestartWatchdog() // 授权后自动重启生效，无需人工干预
+	}
+	go mirrorLoop()
+	go updateWatchLoop() // 更新主动推送：发现新版本即向所有在线 App 广播
+
 	url := fmt.Sprintf("http://127.0.0.1:%d", uiLn.Addr().(*net.TCPAddr).Port)
-	log.Printf("VoiceKey Mac 端已启动：仪表盘 %s，数据端口 %d（mDNS 广播中）", url, port)
+	log.Printf("VoiceKey Mac 端已启动：仪表盘 %s，数据端口 %d（mDNS 广播中，实时同显已启用）", url, port)
 	exec.Command("open", url).Start()
 
 	for {
