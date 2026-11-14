@@ -1,0 +1,6 @@
+{
+  "versionCode": 7,
+  "versionName": "0.7.0",
+  "apkUrl": "https://raw.githubusercontent.com/chencanxin/voicekey-dist/main/VoiceKey-v0.7.0.apk",
+  "changelog": "实时同显(手机→Mac)、日志直传、更新推送"
+}
