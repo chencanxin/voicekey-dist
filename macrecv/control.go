@@ -125,8 +125,8 @@ var comboKeys = map[string]int{
 	"tab": 48, "space": 49, "a": 0, "c": 8, "v": 9, "z": 13,
 }
 
-// moveGain 触控板移动增益（文档建议 1.5~2.0）
-const moveGain = 1.5
+// 移动/滚动敏感度与方向改由 ~/.voicekey/settings.json 驱动（仪表盘可调），
+// 此处仅保留帧解析与 CGEvent 发送。默认值见 settings.go。
 
 // handleKeyFrame K:<key>
 func handleKeyFrame(arg string) error {
@@ -169,15 +169,19 @@ func handleTouchFrame(arg string) error {
 		if err != nil {
 			return err
 		}
-		C.post_mouse_move(C.double(dx*moveGain), C.double(dy*moveGain))
+		g := currentSettings().MoveGain
+		C.post_mouse_move(C.double(dx*g), C.double(dy*g))
 		return nil
 	case strings.HasPrefix(arg, "s:"):
 		dx, dy, err := parseDelta(arg[2:])
 		if err != nil {
 			return err
 		}
-		// 安卓手势约定双指上滑=内容下移；macOS 自然滚动语义下正值即"手指向上"
-		C.post_scroll(C.double(dx), C.double(dy))
+		s := currentSettings()
+		if s.ScrollInvert {
+			dx, dy = -dx, -dy
+		}
+		C.post_scroll(C.double(dx*s.ScrollGainX), C.double(dy*s.ScrollGainY))
 		return nil
 	case arg == "c:l":
 		C.post_click(1)
@@ -212,6 +216,16 @@ func handleTouchFrame(arg string) error {
 		return nil
 	}
 	return fmt.Errorf("未知触控帧 %q", arg)
+}
+
+// clearFocusedField 全选当前聚焦输入框并删除（实时同显：手机端把文字删光时调用）。
+// 比"⌘A + 粘贴空串"可靠：不经过剪贴板，不受 pbcopy/DLP 干扰。
+func clearFocusedField() {
+	cMod := C.CString("cmd")
+	defer C.free(unsafe.Pointer(cMod))
+	C.post_combo(cMod, C.int(0)) // ⌘A 全选
+	C.usleep(40000)
+	C.post_key(51) // forward delete
 }
 
 func parseDelta(s string) (dx, dy float64, err error) {

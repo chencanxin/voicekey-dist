@@ -34,7 +34,7 @@ import (
 const preferredPort = 7979
 
 // version 当前版本，与发布仓库 voicekey-dist 根目录的 version.txt 对应
-const version = "0.7.14"
+const version = "0.7.15"
 
 // versionCheckURLs 版本检查地址。fetchLatestVersion 会取所有成功响应中的
 // 最大版本号，单个源陈旧不影响判定。api.github.com 最快最新排首位，
@@ -196,13 +196,24 @@ func remoteIP(conn net.Conn) string {
 	return host
 }
 
+// handle 处理一条 TCP 连接：支持一连接多帧（每帧一行，\n 结尾），
+// 手机端可复用连接流水线发帧（如高频移动帧），避免每帧一次握手造成的掉帧。
 func handle(conn net.Conn) {
 	defer conn.Close()
-	line, err := bufio.NewReader(conn).ReadString('\n')
-	if err != nil {
-		return
+	if tc, ok := conn.(*net.TCPConn); ok {
+		tc.SetNoDelay(true)
 	}
-	s := strings.TrimRight(line, "\n")
+	reader := bufio.NewReader(conn)
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return
+		}
+		handleFrame(strings.TrimRight(line, "\n"), conn)
+	}
+}
+
+func handleFrame(s string, conn net.Conn) {
 	from := remoteIP(conn)
 
 	// v0.6 控制帧：K: 单键 / C: 组合键 / T: 触控板（不走 base64、不进历史）
@@ -257,6 +268,19 @@ func handle(conn net.Conn) {
 		return
 	}
 	countFrame("text")
+	// 实时同显清空：手机端把文字删光时发 R: + 空串，Mac 端全选删除聚焦输入框内容。
+	// 不经过剪贴板（pbcopy 空串在部分环境被 DLP 拦截），直接发删除键，最可靠。
+	if replace && len(raw) == 0 {
+		if !axTrusted() {
+			log.Println("模拟清空失败（辅助功能权限未授予）")
+			return
+		}
+		clearFocusedField()
+		app, _, _ := focusedFieldText()
+		log.Printf("已清空聚焦输入框（前台: %s，来自 %s）", app, from)
+		publish(event{Time: time.Now().Format("15:04:05"), Text: ""})
+		return
+	}
 	recordHistory(string(raw))
 	paste(string(raw), replace)
 }
@@ -315,6 +339,13 @@ var page = template.Must(template.New("ui").Parse(`<!DOCTYPE html>
              font-size: 14px; color: #333; }
   #log time { color: #999; margin-right: 10px; font-family: ui-monospace, monospace; }
   .dim { color: #888; font-size: 13px; }
+  .row { margin-top: 12px; font-size: 14px; color: #333; }
+  .row label { display: block; margin-bottom: 4px; }
+  .row input[type=range] { width: 100%; }
+  .switch-row { display: flex; align-items: center; gap: 8px; margin-top: 14px; font-size: 14px; }
+  button { margin-top: 14px; padding: 8px 20px; border: 0; border-radius: 8px;
+           background: #0071e3; color: #fff; font-size: 14px; cursor: pointer; }
+  button:active { opacity: .7; }
 </style>
 </head>
 <body>
@@ -331,6 +362,18 @@ var page = template.Must(template.New("ui").Parse(`<!DOCTYPE html>
   <div style="margin-top:8px">前台 App：<span class="mono" id="mApp">—</span>
        &nbsp; 焦点：<span id="mFocus" class="dim">检测中…</span></div>
   <div class="dim" style="margin-top:8px; white-space:pre-wrap" id="mText"></div>
+</div>
+<div class="card">
+  <b>触控板体验设置</b> <span class="dim">（保存后即时生效，存于 ~/.voicekey/settings.json）</span>
+  <div class="row"><label>移动敏感度 <span id="vMove" class="mono">1.5</span></label>
+    <input type="range" id="sMove" min="0.2" max="3" step="0.1" value="1.5"></div>
+  <div class="row"><label>上下滚动敏感度 <span id="vSy" class="mono">1.0</span></label>
+    <input type="range" id="sSy" min="0.2" max="3" step="0.1" value="1.0"></div>
+  <div class="row"><label>左右滚动敏感度 <span id="vSx" class="mono">1.0</span></label>
+    <input type="range" id="sSx" min="0.2" max="3" step="0.1" value="1.0"></div>
+  <div class="switch-row"><input type="checkbox" id="sInv">
+    <label for="sInv">滚动方向反转（双指上滑 = 内容上移/传统滚动）</label></div>
+  <button id="saveBtn">保存设置</button> <span id="saveMsg" class="dim"></span>
 </div>
 <div class="card">
   <b>接收记录</b>
@@ -356,12 +399,37 @@ mes.onmessage = e => {
   f.className = d.focused ? "ok" : "dim";
   document.getElementById("mText").textContent = d.focused ? d.text : "（点击任意输入框开始同显）";
 };
+// 触控板设置：载入当前值 → 保存
+const S = { move: document.getElementById("sMove"), sy: document.getElementById("sSy"),
+            sx: document.getElementById("sSx"), inv: document.getElementById("sInv") };
+const V = { move: document.getElementById("vMove"), sy: document.getElementById("vSy"),
+            sx: document.getElementById("vSx") };
+function refreshLabels() {
+  V.move.textContent = Number(S.move.value).toFixed(1);
+  V.sy.textContent = Number(S.sy.value).toFixed(1);
+  V.sx.textContent = Number(S.sx.value).toFixed(1);
+}
+["move","sy","sx"].forEach(k => S[k].addEventListener("input", refreshLabels));
+fetch("/settings").then(r => r.json()).then(d => {
+  S.move.value = d.moveGain; S.sy.value = d.scrollGainY; S.sx.value = d.scrollGainX;
+  S.inv.checked = d.scrollInvert; refreshLabels();
+}).catch(() => {});
+document.getElementById("saveBtn").onclick = () => {
+  const body = { moveGain: Number(S.move.value), scrollGainY: Number(S.sy.value),
+                 scrollGainX: Number(S.sx.value), scrollInvert: S.inv.checked };
+  fetch("/settings", { method: "POST", headers: {"Content-Type": "application/json"},
+                       body: JSON.stringify(body) })
+    .then(r => r.json())
+    .then(() => { document.getElementById("saveMsg").textContent = "已保存 ✓"; })
+    .catch(() => { document.getElementById("saveMsg").textContent = "保存失败"; });
+};
 </script>
 </body>
 </html>`))
 
 func main() {
 	initDiagLog()
+	loadSettings()
 	log.Printf("VoiceKey Mac 端 v%s", version)
 	go selfUpdateLoop() // 60 秒轮询自更新：发现新版本 → brew upgrade → 自重启
 
@@ -398,6 +466,7 @@ func main() {
 		page.Execute(w, map[string]any{"Port": port, "Start": startAt, "Version": version})
 	}))
 	http.HandleFunc("/events", withAccessLog(eventsHandler))
+	http.HandleFunc("/settings", withAccessLog(settingsHandler))
 	http.HandleFunc("/mirror", withAccessLog(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		json.NewEncoder(w).Encode(mirrorSnapshot())

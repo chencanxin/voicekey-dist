@@ -182,6 +182,7 @@ func diagHandler(w http.ResponseWriter, r *http.Request) {
 		"access":     accessSnapshot(),
 		"frameStats": frameCounterSnapshot(),
 		"appLogs":    appLogSnapshot(),
+		"touchSettings": currentSettings(),
 	})
 }
 
