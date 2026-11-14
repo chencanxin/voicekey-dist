@@ -70,7 +70,7 @@ func sourceResultsSnapshot() map[string]string {
 }
 
 func fetchLatestVersion() string {
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := &http.Client{Timeout: 12 * time.Second}
 	latest := ""
 	for _, u := range versionCheckURLs {
 		resp, err := client.Get(u)
@@ -103,6 +103,10 @@ func fetchLatestVersion() string {
 		}
 		if v != "" && (latest == "" || isNewer(latest, v)) {
 			latest = v
+			// 已有源报告比当前运行版本更新，立即采用，不再等慢源
+			if isNewer(version, latest) {
+				return latest
+			}
 		}
 	}
 	return latest
