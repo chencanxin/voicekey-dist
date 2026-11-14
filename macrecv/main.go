@@ -34,7 +34,7 @@ import (
 const preferredPort = 7979
 
 // version 当前版本，与发布仓库 voicekey-dist 根目录的 version.txt 对应
-const version = "0.7.2"
+const version = "0.7.3"
 
 // versionCheckURLs 按顺序尝试的版本检查地址（jsDelivr 国内可达优先）
 var versionCheckURLs = []string{
@@ -317,7 +317,8 @@ var page = template.Must(template.New("ui").Parse(`<!DOCTYPE html>
 <h1>VoiceKey Mac 端</h1>
 <div class="card">
   <div>状态：<span class="ok">● 运行中</span></div>
-  <div style="margin-top:8px">端口：<span class="mono">{{.Port}}</span>
+  <div style="margin-top:8px">版本：<span class="mono">v{{.Version}}</span>
+       &nbsp; 端口：<span class="mono">{{.Port}}</span>
        &nbsp; 启动于 <span class="mono">{{.Start}}</span></div>
   <div class="dim" style="margin-top:8px">手机端打开 App 会自动搜索到这台 Mac，无需填写 IP。</div>
 </div>
@@ -390,7 +391,7 @@ func main() {
 
 	// 网页仪表盘（全部经访问日志中间件，联调可查）
 	http.HandleFunc("/", withAccessLog(func(w http.ResponseWriter, r *http.Request) {
-		page.Execute(w, map[string]any{"Port": port, "Start": startAt})
+		page.Execute(w, map[string]any{"Port": port, "Start": startAt, "Version": version})
 	}))
 	http.HandleFunc("/events", withAccessLog(eventsHandler))
 	http.HandleFunc("/mirror", withAccessLog(func(w http.ResponseWriter, r *http.Request) {
@@ -420,7 +421,14 @@ func main() {
 
 	url := fmt.Sprintf("http://127.0.0.1:%d", uiLn.Addr().(*net.TCPAddr).Port)
 	log.Printf("VoiceKey Mac 端已启动：仪表盘 %s，数据端口 %d（mDNS 广播中，实时同显已启用）", url, port)
-	exec.Command("open", url).Start()
+	// 浏览器弹窗策略：
+	// - VK_NO_BROWSER=1 完全不弹（看门狗/自更新重启、launchd 后台运行时用）
+	// - 正常启动也只后台开标签页（open -g 不抢前台焦点），不打扰用户当前工作
+	if os.Getenv("VK_NO_BROWSER") == "1" {
+		log.Println("仪表盘未自动打开（VK_NO_BROWSER=1），可手动访问 " + url)
+	} else {
+		exec.Command("open", "-g", url).Start()
+	}
 
 	for {
 		conn, err := ln.Accept()

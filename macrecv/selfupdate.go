@@ -78,11 +78,24 @@ func selfUpdateLoop() {
 			return
 		}
 		log.Printf("自更新：发现新版本 v%s（当前 v%s），开始通过 Homebrew 升级", latest, version)
-		if _, err := exec.LookPath("brew"); err != nil {
-			log.Printf("自更新：未安装 Homebrew，请手动更新到 v%s", latest)
+		// launchd/精简 PATH 下可能没有 brew：先 LookPath，再回退固定路径
+		brewPath, err := exec.LookPath("brew")
+		if err != nil {
+			for _, p := range []string{"/opt/homebrew/bin/brew", "/usr/local/bin/brew"} {
+				if _, err := os.Stat(p); err == nil {
+					brewPath = p
+					break
+				}
+			}
+		}
+		if brewPath == "" {
+			log.Printf("自更新：未找到 Homebrew，请手动更新到 v%s", latest)
 			return
 		}
-		cmd := exec.Command("brew", "upgrade", "voicekey")
+		cmd := exec.Command(brewPath, "upgrade", "voicekey")
+		// 给 brew 一个完整 PATH，不受父进程环境（launchd/自更新重启链）影响
+		fullPath := "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+		cmd.Env = append(os.Environ(), "PATH="+fullPath)
 		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 		if err := cmd.Run(); err != nil {
 			log.Println("自更新：brew upgrade 失败，下轮重试:", err)
