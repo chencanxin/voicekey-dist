@@ -170,6 +170,14 @@ func diagHandler(w http.ResponseWriter, r *http.Request) {
 		"version":    version,
 		"uptimeSec":  int64(time.Since(startedAt).Seconds()),
 		"axTrusted":  axTrusted(),
+		"updateCheck": func() map[string]string {
+			lastUpdateCheck.Lock()
+			defer lastUpdateCheck.Unlock()
+			return map[string]string{
+				"latest": lastUpdateCheck.Latest, "checkedAt": lastUpdateCheck.CheckedAt,
+				"result": lastUpdateCheck.Result,
+			}
+		}(),
 		"logs":       logRing.snapshot(),
 		"access":     accessSnapshot(),
 		"frameStats": frameCounterSnapshot(),

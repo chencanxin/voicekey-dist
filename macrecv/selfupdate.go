@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -65,18 +66,37 @@ func isNewer(cur, latest string) bool {
 	return err1 == nil && err2 == nil && l > c
 }
 
+// lastUpdateCheck 最近一次版本检查的结果（/diag 直读，联调不再靠猜）
+var lastUpdateCheck = struct {
+	sync.Mutex
+	Latest    string `json:"latest"`
+	CheckedAt string `json:"checkedAt"`
+	Result    string `json:"result"` // ok / fetch-failed / newer / upgraded / skipped-*
+}{Result: "never"}
+
+func recordUpdateCheck(latest, result string) {
+	lastUpdateCheck.Lock()
+	lastUpdateCheck.Latest = latest
+	lastUpdateCheck.CheckedAt = time.Now().Format("15:04:05")
+	lastUpdateCheck.Result = result
+	lastUpdateCheck.Unlock()
+}
+
 func selfUpdateLoop() {
 	before := fingerprintSelf()
 	check := func() {
 		latest := fetchLatestVersion()
 		if latest == "" {
 			log.Println("自更新：版本检查失败（网络不通？），下轮重试")
+			recordUpdateCheck("", "fetch-failed")
 			return
 		}
 		if !isNewer(version, latest) {
-			log.Printf("自更新：当前已是最新版本 v%s", version)
+			log.Printf("自更新：远端版本 v%s，当前 v%s，无需更新", latest, version)
+			recordUpdateCheck(latest, "ok")
 			return
 		}
+		recordUpdateCheck(latest, "newer")
 		log.Printf("自更新：发现新版本 v%s（当前 v%s），开始通过 Homebrew 升级", latest, version)
 		// launchd/精简 PATH 下可能没有 brew：先 LookPath，再回退固定路径
 		brewPath, err := exec.LookPath("brew")
@@ -90,6 +110,7 @@ func selfUpdateLoop() {
 		}
 		if brewPath == "" {
 			log.Printf("自更新：未找到 Homebrew，请手动更新到 v%s", latest)
+			recordUpdateCheck(latest, "skipped-no-brew")
 			return
 		}
 		cmd := exec.Command(brewPath, "upgrade", "voicekey")
@@ -99,6 +120,7 @@ func selfUpdateLoop() {
 		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 		if err := cmd.Run(); err != nil {
 			log.Println("自更新：brew upgrade 失败，下轮重试:", err)
+			recordUpdateCheck(latest, "brew-failed")
 			return
 		}
 		// 只有当前进程就是 brew 管理的二进制时才自重启；
@@ -113,12 +135,15 @@ func selfUpdateLoop() {
 		realBrew, _ := filepath.EvalSymlinks("/opt/homebrew/bin/voicekey")
 		if realBrew == "" || realSelf != realBrew {
 			log.Printf("自更新：brew 已装好 v%s，但当前进程不是 brew 管理的二进制（%s），跳过自重启", latest, self)
+			recordUpdateCheck(latest, "skipped-not-brew-binary")
 			return
 		}
 		if after := fingerprintSelf(); after == before {
 			log.Printf("自更新：brew upgrade 返回成功但二进制未变化（仍是 v%s），跳过自重启", version)
+			recordUpdateCheck(latest, "skipped-unchanged")
 			return
 		}
+		recordUpdateCheck(latest, "upgraded")
 		log.Printf("自更新：已升级到 v%s，3 秒后自重启进程…", latest)
 		time.Sleep(3 * time.Second)
 		if err := syscall.Exec(self, os.Args, os.Environ()); err != nil {
