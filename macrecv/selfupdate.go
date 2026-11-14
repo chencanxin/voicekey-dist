@@ -10,6 +10,8 @@ package main
 // 进程并在日志里给出授权指引，用户勾选一次即恢复。
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -83,6 +85,18 @@ func fetchLatestVersion() string {
 			continue
 		}
 		v := strings.TrimSpace(string(body))
+		// api.github.com contents 接口返回 JSON，content 字段是 base64
+		if strings.Contains(u, "api.github.com") {
+			var payload struct {
+				Content string `json:"content"`
+			}
+			if err := json.Unmarshal(body, &payload); err == nil && payload.Content != "" {
+				if raw, err := base64.StdEncoding.DecodeString(
+					strings.ReplaceAll(payload.Content, "\n", "")); err == nil {
+					v = strings.TrimSpace(string(raw))
+				}
+			}
+		}
 		recordSource(u, fmt.Sprintf("%d %q", resp.StatusCode, v))
 		if resp.StatusCode != http.StatusOK {
 			continue
