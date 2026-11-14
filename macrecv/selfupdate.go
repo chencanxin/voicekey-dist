@@ -10,6 +10,7 @@ package main
 // 进程并在日志里给出授权指引，用户勾选一次即恢复。
 
 import (
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -41,24 +42,51 @@ func fingerprintSelf() exeFingerprint {
 	return exeFingerprint{size: fi.Size(), mtime: fi.ModTime()}
 }
 
-// fetchLatestVersion 按序尝试 versionCheckURLs（jsDelivr 国内可达优先）
-// fetchLatestVersion 并发/按序尝试 versionCheckURLs 全部镜像，
+// fetchLatestVersion 按序尝试 versionCheckURLs 全部镜像，
 // 取「所有成功响应里的最大版本号」——任何一个源看到新版本都算数，
 // 避免单个 CDN 边缘节点缓存陈旧导致自更新被卡住。
+// 每个源的明细（状态码/内容/错误）记录到 sourceResults，/diag 直读。
+var sourceResults = struct {
+	sync.Mutex
+	m map[string]string
+}{m: map[string]string{}}
+
+func recordSource(u, info string) {
+	sourceResults.Lock()
+	sourceResults.m[u] = info
+	sourceResults.Unlock()
+}
+
+func sourceResultsSnapshot() map[string]string {
+	sourceResults.Lock()
+	defer sourceResults.Unlock()
+	out := make(map[string]string, len(sourceResults.m))
+	for k, v := range sourceResults.m {
+		out[k] = v
+	}
+	return out
+}
+
 func fetchLatestVersion() string {
 	client := &http.Client{Timeout: 5 * time.Second}
 	latest := ""
 	for _, u := range versionCheckURLs {
 		resp, err := client.Get(u)
 		if err != nil {
+			recordSource(u, "err: "+err.Error())
 			continue
 		}
 		body, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		if err != nil || resp.StatusCode != http.StatusOK {
+		if err != nil {
+			recordSource(u, "read-err: "+err.Error())
 			continue
 		}
 		v := strings.TrimSpace(string(body))
+		recordSource(u, fmt.Sprintf("%d %q", resp.StatusCode, v))
+		if resp.StatusCode != http.StatusOK {
+			continue
+		}
 		if v != "" && (latest == "" || isNewer(latest, v)) {
 			latest = v
 		}
