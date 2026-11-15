@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-const pushCheckInterval = 5 * time.Minute
+const pushCheckInterval = 60 * time.Second
 
 type pushEvent struct {
 	VersionCode int    `json:"versionCode"`
@@ -51,6 +51,11 @@ func updateWatchLoop() {
 			if info.VersionCode != lastCode || first {
 				lastCode = info.VersionCode
 				first = false
+				// 先确保本地 APK 就位（Gitee 自动拉取），再推送给手机，
+				// 用户点弹窗下载时 /app-apk 一定有货。
+				if err := ensureAPK(info); err != nil {
+					log.Println("App 更新：APK 自动拉取失败（推送照发，下载可能不可用）:", err)
+				}
 				ev := pushEvent{
 					VersionCode: info.VersionCode,
 					VersionName: info.VersionName,

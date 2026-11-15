@@ -14,14 +14,17 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
 
-// androidManifestURLs 与 version.txt 同一组国内优先镜像
+// androidManifestURLs：Gitee 源站 raw 首选（国内、直连无 CDN 缓存坑，版本号秒级同步），
+// jsDelivr 系列仅作外网兜底。
 var androidManifestURLs = []string{
+	"https://gitee.com/chencanxin/voicekey/raw/main/android.json",
 	"https://cdn.jsdelivr.net/gh/chencanxin/voicekey-dist@main/android.json",
-	"https://fastly.jsdelivr.net/gh/chencanxin/voicekey-dist@main/android.json",
 	"https://raw.githubusercontent.com/chencanxin/voicekey-dist/main/android.json",
 }
 
@@ -30,6 +33,10 @@ type appUpdateInfo struct {
 	VersionName string `json:"versionName"`
 	ApkURL      string `json:"apkUrl"`
 	Changelog   string `json:"changelog"`
+	// ApkGitee：APK 在 Gitee 仓库里的文件名（可选）。
+	// 有值时 Mac 端检测到新版本会自动从 Gitee 拉 APK 到 ~/.voicekey/，
+	// 手机端 /app-apk 局域网直发始终有货，全链路无需人工。
+	ApkGitee string `json:"apkGitee"`
 }
 
 var appUpdateCache = struct {
@@ -39,7 +46,7 @@ var appUpdateCache = struct {
 	err       error
 }{}
 
-const appUpdateCacheTTL = 5 * time.Minute
+const appUpdateCacheTTL = 60 * time.Second
 
 // fetchAppUpdate 拉取 android.json。
 // 快路径：缓存未过期直接返回。
@@ -153,6 +160,65 @@ func findLocalAPK() string {
 		}
 	}
 	return ""
+}
+
+// giteeRawBase Gitee 源站 raw 地址（国内直连，无 CDN 缓存坑）
+const giteeRawBase = "https://gitee.com/chencanxin/voicekey/raw/main/"
+
+// ensureAPK 检测到新版本时，从 Gitee 自动拉 APK 到 ~/.voicekey/VoiceKey.apk，
+// 保证手机端 /app-apk 局域网直发始终有货，全链路无需人工。
+// 幂等：~/.voicekey/apk-version 记录已下载的 versionCode；先写 .tmp 再 rename，
+// 避免手机端下到半截文件。
+func ensureAPK(info appUpdateInfo) error {
+	if info.ApkGitee == "" {
+		return nil // 旧式清单：APK 靠会话/人工放置，不自动拉
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	dir := filepath.Join(home, ".voicekey")
+	verFile := filepath.Join(dir, "apk-version")
+	if b, err := os.ReadFile(verFile); err == nil &&
+		strings.TrimSpace(string(b)) == strconv.Itoa(info.VersionCode) {
+		return nil // 本地已是最新
+	}
+	url := giteeRawBase + info.ApkGitee
+	log.Printf("App 更新：正在从 Gitee 拉取 %s（v%s）…", info.ApkGitee, info.VersionName)
+	client := &http.Client{Timeout: 3 * time.Minute}
+	resp, err := client.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	tmp := filepath.Join(dir, ".VoiceKey.apk.tmp")
+	f, err := os.Create(tmp)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(f, resp.Body); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	f.Close()
+	st, err := os.Stat(tmp)
+	if err != nil || st.Size() < 1<<20 {
+		os.Remove(tmp)
+		return fmt.Errorf("下载文件异常（%d 字节）", st.Size())
+	}
+	if err := os.Rename(tmp, filepath.Join(dir, "VoiceKey.apk")); err != nil {
+		return err
+	}
+	os.WriteFile(verFile, []byte(strconv.Itoa(info.VersionCode)), 0o644)
+	log.Printf("App 更新：APK 已自动就位（%d 字节，versionCode %d）", st.Size(), info.VersionCode)
+	return nil
 }
 
 // appApkHandler GET /app-apk → 优先本地文件直发（局域网），缺失时回退代理远程 apkUrl

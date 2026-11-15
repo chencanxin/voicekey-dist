@@ -2,7 +2,7 @@ package main
 
 // v0.6 控制帧：单键 / 组合键 / 触控板（光标移动、滚动、点击、滑扫）。
 // 全部经 CGEvent 本进程直发（与实时同显同一项辅助功能授权）。
-// 帧格式见 docs/PROTOCOL.md：K:<key> / C:<combo> / T:m:dx,dy / T:s:dx,dy / T:c:l|r / T:g:<n>:<dir>
+// 帧格式见 docs/PROTOCOL.md：K:<key> / C:<combo> / N: 换行 / T:m:dx,dy / T:s:dx,dy / T:c:l|r / T:g:<n>:<dir>
 
 /*
 #cgo LDFLAGS: -framework ApplicationServices -framework CoreFoundation
@@ -23,6 +23,23 @@ static void post_key(int keycode) {
     CFRelease(src);
 }
 
+// 换行：直接投递 Unicode \n 字符（CGEventKeyboardSetUnicodeString），
+// 不经过按键映射——任何输入框只插入换行，不触发"Return=发送"类 App 行为
+static void post_newline(void) {
+    CGEventSourceRef src = CGEventSourceCreate(kCGEventSourceStateCombinedSessionState);
+    if (!src) return;
+    UniChar ch = (UniChar)'\n';
+    CGEventRef down = CGEventCreateKeyboardEvent(src, (CGKeyCode)36, true);
+    CGEventRef up = CGEventCreateKeyboardEvent(src, (CGKeyCode)36, false);
+    if (down) CGEventKeyboardSetUnicodeString(down, 1, &ch);
+    if (up) CGEventKeyboardSetUnicodeString(up, 1, &ch);
+    if (down) CGEventPost(kCGHIDEventTap, down);
+    if (up) CGEventPost(kCGHIDEventTap, up);
+    if (down) CFRelease(down);
+    if (up) CFRelease(up);
+    CFRelease(src);
+}
+
 // 修饰键 keycode
 static int mod_keycode(const char* name) {
     if (strcmp(name, "cmd") == 0) return 55;
@@ -31,7 +48,6 @@ static int mod_keycode(const char* name) {
     if (strcmp(name, "shift") == 0) return 56;
     return -1;
 }
-
 static CGEventFlags mod_flag(const char* name) {
     if (strcmp(name, "cmd") == 0) return kCGEventFlagMaskCommand;
     if (strcmp(name, "opt") == 0) return kCGEventFlagMaskAlternate;
@@ -135,6 +151,14 @@ func handleKeyFrame(arg string) error {
 		return fmt.Errorf("未知单键 %q", arg)
 	}
 	C.post_key(C.int(code))
+	return nil
+}
+
+// handleNewlineFrame N: 换行帧：插入 \n 字符。
+// 与 K:enter 的本质区别：K:enter 是物理回车键事件，App 可自定 Return=发送；
+// N: 是 Unicode 字符直投，任何输入框都只插换行，行为确定。
+func handleNewlineFrame() error {
+	C.post_newline()
 	return nil
 }
 

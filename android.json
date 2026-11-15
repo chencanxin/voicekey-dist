@@ -2,5 +2,6 @@
   "versionCode": 9,
   "versionName": "0.7.2",
   "apkUrl": "https://raw.githubusercontent.com/chencanxin/voicekey-dist/main/VoiceKey-v0.7.2.apk",
+  "apkGitee": "VoiceKey-v0.7.2.apk",
   "changelog": "UI 全面改版：新发送按钮/触控面板/日志页/诊断页/深色模式"
 }

@@ -34,7 +34,7 @@ import (
 const preferredPort = 7979
 
 // version 当前版本，与发布仓库 voicekey-dist 根目录的 version.txt 对应
-const version = "0.7.16"
+const version = "0.7.17"
 
 // versionCheckURLs 版本检查地址。fetchLatestVersion 会取所有成功响应中的
 // 最大版本号，单个源陈旧不影响判定。api.github.com 最快最新排首位，
@@ -219,6 +219,7 @@ func handleFrame(s string, conn net.Conn) {
 	// v0.6 控制帧：K: 单键 / C: 组合键 / T: 触控板（不走 base64、不进历史）
 	// v0.7 L: 帧：安卓端日志上行（base64 的一行日志文本），供 /diag 直读
 	// v0.7.16 V: 帧：安卓端版本上报（明文版本号，如 0.7.0），用于版本互显
+	// v0.7.17 N: 帧：换行（Unicode \n 字符直投，见 control.go handleNewlineFrame）
 	switch {
 	case strings.HasPrefix(s, "V:"):
 		countFrame("version")
@@ -240,6 +241,14 @@ func handleFrame(s string, conn net.Conn) {
 			return
 		}
 		log.Printf("按键: %s（来自 %s）", s[2:], from)
+		return
+	case strings.HasPrefix(s, "N:"):
+		countFrame("newline")
+		if err := handleNewlineFrame(); err != nil {
+			log.Printf("换行帧失败（来自 %s）: %v", from, err)
+			return
+		}
+		log.Printf("换行（来自 %s）", from)
 		return
 	case strings.HasPrefix(s, "C:"):
 		countFrame("combo")
@@ -290,7 +299,6 @@ func handleFrame(s string, conn net.Conn) {
 	recordHistory(string(raw))
 	paste(string(raw), replace)
 }
-
 
 // selfRestartWatchdog 自愈看门狗：启动时未获辅助功能授权则周期性自重启。
 // macOS 对运行中的进程缓存权限查询结果，用户勾选授权后已运行的进程拿不到，
