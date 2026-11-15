@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- 开机自启：cp 本文件到 ~/Library/LaunchAgents/ 然后
+     launchctl load ~/Library/LaunchAgents/com.voicekey.macrecv.plist
+     注意把 /Users/YOURNAME/macrecv 改成你的实际路径 -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.voicekey.macrecv</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/YOURNAME/macrecv/macrecv</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+</dict>
+</plist>

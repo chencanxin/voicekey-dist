@@ -21,6 +21,7 @@ type pushEvent struct {
 	ApkURL      string `json:"apkUrl"`
 	ProxyURL    string `json:"apkProxyUrl"`
 	Changelog   string `json:"changelog"`
+	MacVersion  string `json:"macVersion"` // v0.7.16：App 端可显示 Mac 端版本
 }
 
 var pushBroker = struct {
@@ -56,6 +57,7 @@ func updateWatchLoop() {
 					ApkURL:      info.ApkURL,
 					ProxyURL:    "/app-apk",
 					Changelog:   info.Changelog,
+					MacVersion:  version,
 				}
 				publishPush(ev)
 				pushBroker.Lock()
@@ -96,7 +98,14 @@ func pushEventsHandler(w http.ResponseWriter, r *http.Request) {
 	host := r.Host
 	// 连接即下发当前版本（App 端自行比对 versionCode 决定是否弹窗）
 	if info, err := fetchAppUpdate(); err == nil && info.VersionCode > 0 {
-		ev := pushEvent{info.VersionCode, info.VersionName, info.ApkURL, host + "/app-apk", info.Changelog}
+		ev := pushEvent{
+			VersionCode: info.VersionCode,
+			VersionName: info.VersionName,
+			ApkURL:      info.ApkURL,
+			ProxyURL:    host + "/app-apk",
+			Changelog:   info.Changelog,
+			MacVersion:  version,
+		}
 		fmt.Fprintf(w, "data: %s\n\n", pushJSON(ev))
 		flusher.Flush()
 	}

@@ -128,8 +128,8 @@ func appUpdateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	host := r.Host
-	fmt.Fprintf(w, `{"versionCode":%d,"versionName":%q,"apkUrl":%q,"changelog":%q,"apkProxyUrl":"http://%s/app-apk"}`,
-		info.VersionCode, info.VersionName, info.ApkURL, info.Changelog, host)
+	fmt.Fprintf(w, `{"versionCode":%d,"versionName":%q,"apkUrl":%q,"changelog":%q,"apkProxyUrl":"http://%s/app-apk","macVersion":%q}`,
+		info.VersionCode, info.VersionName, info.ApkURL, info.Changelog, host, version)
 }
 
 // localAPKCandidates 本地 APK 候选路径（优先 ~/.voicekey/VoiceKey.apk）。

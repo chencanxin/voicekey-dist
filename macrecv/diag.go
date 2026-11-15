@@ -140,6 +140,41 @@ func appLogSnapshot() []string {
 	return out
 }
 
+// ---- 安卓端版本上报（V: 帧，v0.7.16 起）----
+
+var appVersionState = struct {
+	sync.Mutex
+	Version string
+	From    string
+	Updated time.Time
+}{}
+
+// setAppVersion 记录手机端上报的版本号（去重，只在变化时记日志）
+func setAppVersion(v, from string) {
+	if v == "" {
+		return
+	}
+	appVersionState.Lock()
+	changed := appVersionState.Version != v
+	appVersionState.Version = v
+	appVersionState.From = from
+	appVersionState.Updated = time.Now()
+	appVersionState.Unlock()
+	if changed {
+		log.Printf("手机端版本: v%s（来自 %s）", v, from)
+	}
+}
+
+func appVersionSnapshot() map[string]any {
+	appVersionState.Lock()
+	defer appVersionState.Unlock()
+	return map[string]any{
+		"version": appVersionState.Version,
+		"from":    appVersionState.From,
+		"updated": appVersionState.Updated,
+	}
+}
+
 // statusWriter 包装 ResponseWriter 记录状态码
 type statusWriter struct {
 	http.ResponseWriter
@@ -182,6 +217,7 @@ func diagHandler(w http.ResponseWriter, r *http.Request) {
 		"access":     accessSnapshot(),
 		"frameStats": frameCounterSnapshot(),
 		"appLogs":    appLogSnapshot(),
+		"appVersion": appVersionSnapshot(),
 		"touchSettings": currentSettings(),
 	})
 }

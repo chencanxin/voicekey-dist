@@ -171,6 +171,30 @@ func clen(b []byte) int {
 	return len(b)
 }
 
+// lastPhoneFrame 最近一条手机端文本/清空帧（Mac 已知情的内容+时间）。
+// 用途：同显防回环——App 收到 mirror 后回填自家输入框会触发它的编辑监听
+// 回发帧，Mac 粘贴后快照与帧内容一致，此时不再推回 App，避免来回闪烁。
+var lastPhoneFrame = struct {
+	sync.Mutex
+	Text string
+	At   time.Time
+}{}
+
+func notePhoneFrame(text string) {
+	lastPhoneFrame.Lock()
+	lastPhoneFrame.Text, lastPhoneFrame.At = text, time.Now()
+	lastPhoneFrame.Unlock()
+}
+
+// isEchoOfRecentFrame 快照文本是否为最近手机帧的回显（1 秒窗口）
+func isEchoOfRecentFrame(text string) bool {
+	lastPhoneFrame.Lock()
+	defer lastPhoneFrame.Unlock()
+	return lastPhoneFrame.At.IsZero() == false &&
+		text == lastPhoneFrame.Text &&
+		time.Since(lastPhoneFrame.At) < time.Second
+}
+
 // mirrorLoop 轮询聚焦输入框文本，变化时更新快照并推送。
 // 轮询而非 AX 通知：通知需要逐 App 注册观察者，轮询 200ms 对 LAN 同显足够。
 func mirrorLoop() {
@@ -187,6 +211,10 @@ func mirrorLoop() {
 		mirrorState.App, mirrorState.Text, mirrorState.Focused = app, text, focused
 		mirrorState.Updated = time.Now()
 		mirrorState.Unlock()
+		if isEchoOfRecentFrame(text) {
+			// 同显防回环：内容与刚粘贴/清空的手机帧一致（Mac 已知情），不再广播
+			continue
+		}
 		// 焦点变化记一行（不含全文，只记长度，同显排障用）
 		log.Printf("同显焦点: app=%q focused=%v 文本长度=%d", app, focused, len([]rune(text)))
 		publishMirror(mirrorEvent{App: app, Text: text, Focused: focused})

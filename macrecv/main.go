@@ -34,7 +34,7 @@ import (
 const preferredPort = 7979
 
 // version 当前版本，与发布仓库 voicekey-dist 根目录的 version.txt 对应
-const version = "0.7.15"
+const version = "0.7.16"
 
 // versionCheckURLs 版本检查地址。fetchLatestVersion 会取所有成功响应中的
 // 最大版本号，单个源陈旧不影响判定。api.github.com 最快最新排首位，
@@ -218,7 +218,12 @@ func handleFrame(s string, conn net.Conn) {
 
 	// v0.6 控制帧：K: 单键 / C: 组合键 / T: 触控板（不走 base64、不进历史）
 	// v0.7 L: 帧：安卓端日志上行（base64 的一行日志文本），供 /diag 直读
+	// v0.7.16 V: 帧：安卓端版本上报（明文版本号，如 0.7.0），用于版本互显
 	switch {
+	case strings.HasPrefix(s, "V:"):
+		countFrame("version")
+		setAppVersion(strings.TrimSpace(s[2:]), from)
+		return
 	case strings.HasPrefix(s, "L:"):
 		countFrame("log")
 		raw, err := base64.StdEncoding.DecodeString(s[2:])
@@ -268,6 +273,7 @@ func handleFrame(s string, conn net.Conn) {
 		return
 	}
 	countFrame("text")
+	notePhoneFrame(string(raw)) // 同显防回环：Mac 已知情，快照一致时不回推 App
 	// 实时同显清空：手机端把文字删光时发 R: + 空串，Mac 端全选删除聚焦输入框内容。
 	// 不经过剪贴板（pbcopy 空串在部分环境被 DLP 拦截），直接发删除键，最可靠。
 	if replace && len(raw) == 0 {
@@ -355,6 +361,7 @@ var page = template.Must(template.New("ui").Parse(`<!DOCTYPE html>
   <div style="margin-top:8px">版本：<span class="mono">v{{.Version}}</span>
        &nbsp; 端口：<span class="mono">{{.Port}}</span>
        &nbsp; 启动于 <span class="mono">{{.Start}}</span></div>
+  <div style="margin-top:8px">已连接手机端：<span class="mono" id="appVer">未上报（App 需 ≥ v0.7.0）</span></div>
   <div class="dim" style="margin-top:8px">手机端打开 App 会自动搜索到这台 Mac，无需填写 IP。</div>
 </div>
 <div class="card">
@@ -400,6 +407,14 @@ mes.onmessage = e => {
   document.getElementById("mText").textContent = d.focused ? d.text : "（点击任意输入框开始同显）";
 };
 // 触控板设置：载入当前值 → 保存
+function refreshAppVer() {
+  fetch("/diag").then(r => r.json()).then(d => {
+    const v = d.appVersion && d.appVersion.version;
+    document.getElementById("appVer").textContent = v ? ("v" + v) : "未上报（App 需 ≥ v0.7.0）";
+  }).catch(() => {});
+}
+refreshAppVer();
+setInterval(refreshAppVer, 5000);
 const S = { move: document.getElementById("sMove"), sy: document.getElementById("sSy"),
             sx: document.getElementById("sSx"), inv: document.getElementById("sInv") };
 const V = { move: document.getElementById("vMove"), sy: document.getElementById("vSy"),
