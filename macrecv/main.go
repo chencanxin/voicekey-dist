@@ -33,17 +33,16 @@ import (
 
 const preferredPort = 7979
 
-// version 当前版本，与发布仓库 voicekey-dist 根目录的 version.txt 对应
-const version = "0.7.18"
+// version 当前版本，与 Gitee 仓库 chencanxin/voicekey 根目录 version.txt 对应
+const version = "0.7.19"
 
-// versionCheckURLs 版本检查地址。fetchLatestVersion 会取所有成功响应中的
-// 最大版本号，单个源陈旧不影响判定。api.github.com 最快最新排首位，
-// jsDelivr 系列是国内可达兜底（边缘缓存可能滞后几分钟），raw 最后。
+// versionCheckURLs 版本检查地址。Gitee 源站 raw 首选（国内直连、无 CDN 缓存坑），
+// GitHub/jsDelivr 仅作历史兜底（仓库已停更，见其中版本不再增长）。
+// fetchLatestVersion 取所有成功响应中的最大版本号，单个源陈旧不影响判定。
 var versionCheckURLs = []string{
+	"https://gitee.com/chencanxin/voicekey/raw/main/version.txt",
 	"https://api.github.com/repos/chencanxin/voicekey-dist/contents/version.txt?ref=main",
-	"https://gcore.jsdelivr.net/gh/chencanxin/voicekey-dist@main/version.txt",
 	"https://cdn.jsdelivr.net/gh/chencanxin/voicekey-dist@main/version.txt",
-	"https://fastly.jsdelivr.net/gh/chencanxin/voicekey-dist@main/version.txt",
 	"https://raw.githubusercontent.com/chencanxin/voicekey-dist/main/version.txt",
 }
 
