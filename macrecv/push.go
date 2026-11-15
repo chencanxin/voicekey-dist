@@ -40,22 +40,26 @@ func publishPush(ev pushEvent) {
 	}
 }
 
-// updateWatchLoop 周期检查更新；versionCode 变化时推送给所有在线 App。
+// updateWatchLoop 周期检查更新。versionCode 变化时推送给所有在线 App；
+// APK 自动拉取与推送解耦：拉取失败下轮（60s）重试，成功才标记，避免一次
+// 网络抖动就永远放弃（曾有 403 后不再重试的卡点）。
 // ProxyURL 给路径 "/app-apk"：App 端用已连接的 host 拼接全地址。
 func updateWatchLoop() {
-	var lastCode int
+	var lastCode, ensuredCode int
 	first := true
 	for {
 		info, err := fetchAppUpdate()
 		if err == nil && info.VersionCode > 0 {
+			if info.VersionCode != ensuredCode {
+				if err := ensureAPK(info); err != nil {
+					log.Println("App 更新：APK 自动拉取失败（60 秒后重试）:", err)
+				} else {
+					ensuredCode = info.VersionCode
+				}
+			}
 			if info.VersionCode != lastCode || first {
 				lastCode = info.VersionCode
 				first = false
-				// 先确保本地 APK 就位（Gitee 自动拉取），再推送给手机，
-				// 用户点弹窗下载时 /app-apk 一定有货。
-				if err := ensureAPK(info); err != nil {
-					log.Println("App 更新：APK 自动拉取失败（推送照发，下载可能不可用）:", err)
-				}
 				ev := pushEvent{
 					VersionCode: info.VersionCode,
 					VersionName: info.VersionName,

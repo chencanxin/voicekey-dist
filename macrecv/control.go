@@ -120,6 +120,56 @@ static void post_click(int button) {
     if (d) CFRelease(d);
     if (u) CFRelease(u);
 }
+
+// ---- 按住选中（拖动选择文字）----
+static int drag_button_down = 0;
+
+static void post_drag_end(void);
+
+// 按住左键不松：之后的移动 = leftMouseDragged = 框选文字
+static void post_drag_start(void) {
+    if (drag_button_down) return;
+    CGPoint p = cursor_pos();
+    CGEventRef d = CGEventCreateMouseEvent(NULL, kCGEventLeftMouseDown, p, kCGMouseButtonLeft);
+    if (d) { CGEventPost(kCGHIDEventTap, d); CFRelease(d); }
+    drag_button_down = 1;
+}
+
+// 拖动中移动：按住状态发 LeftMouseDragged，否则退化为普通移动
+static void post_drag_move(double dx, double dy) {
+    if (!drag_button_down) { post_mouse_move(dx, dy); return; }
+    CGPoint p = cursor_pos();
+    CGPoint q = CGPointMake(p.x + dx, p.y + dy);
+    CGEventRef e = CGEventCreateMouseEvent(NULL, kCGEventLeftMouseDragged, q, kCGMouseButtonLeft);
+    if (e) { CGEventPost(kCGHIDEventTap, e); CFRelease(e); }
+}
+
+static void post_drag_end(void) {
+    if (!drag_button_down) return;
+    CGPoint p = cursor_pos();
+    CGEventRef u = CGEventCreateMouseEvent(NULL, kCGEventLeftMouseUp, p, kCGMouseButtonLeft);
+    if (u) { CGEventPost(kCGHIDEventTap, u); CFRelease(u); }
+    drag_button_down = 0;
+}
+
+// n 连击在当前光标处（AppKit 语义：2=选词 3=选段 4=全选）。
+// 关键：down/up 都带 kCGMouseEventClickState=i，AppKit 据此判定多击；
+// 若正处于按住选中状态，先松开再连击。
+static void post_n_click(int n) {
+    post_drag_end();
+    CGPoint p = cursor_pos();
+    for (int i = 1; i <= n; i++) {
+        CGEventRef d = CGEventCreateMouseEvent(NULL, kCGEventLeftMouseDown, p, kCGMouseButtonLeft);
+        CGEventRef u = CGEventCreateMouseEvent(NULL, kCGEventLeftMouseUp, p, kCGMouseButtonLeft);
+        if (d) CGEventSetIntegerValueField(d, kCGMouseEventClickState, i);
+        if (u) CGEventSetIntegerValueField(u, kCGMouseEventClickState, i);
+        if (d) CGEventPost(kCGHIDEventTap, d);
+        if (u) CGEventPost(kCGHIDEventTap, u);
+        if (d) CFRelease(d);
+        if (u) CFRelease(u);
+        usleep(40000);
+    }
+}
 */
 import "C"
 
@@ -194,7 +244,7 @@ func handleTouchFrame(arg string) error {
 			return err
 		}
 		g := currentSettings().MoveGain
-		C.post_mouse_move(C.double(dx*g), C.double(dy*g))
+		C.post_drag_move(C.double(dx*g), C.double(dy*g))
 		return nil
 	case strings.HasPrefix(arg, "s:"):
 		dx, dy, err := parseDelta(arg[2:])
@@ -208,10 +258,27 @@ func handleTouchFrame(arg string) error {
 		C.post_scroll(C.double(dx*s.ScrollGainX), C.double(dy*s.ScrollGainY))
 		return nil
 	case arg == "c:l":
+		C.post_drag_end() // 若按住选中未松，先松开再点，避免变成拖动
 		C.post_click(1)
 		return nil
 	case arg == "c:r":
+		C.post_drag_end()
 		C.post_click(2)
+		return nil
+	case strings.HasPrefix(arg, "k:"):
+		// T:k:<n> n 连击（2=选词 3=选段 4=全选，AppKit 多击语义）
+		n, err := strconv.Atoi(arg[2:])
+		if err != nil || n < 2 || n > 4 {
+			return fmt.Errorf("连击帧格式应为 k:<2|3|4>，收到 %q", arg)
+		}
+		C.post_n_click(C.int(n))
+		return nil
+	case arg == "d:on":
+		// T:d:on 按住左键：后续 T:m 移动 = 框选文字
+		C.post_drag_start()
+		return nil
+	case arg == "d:off":
+		C.post_drag_end()
 		return nil
 	case strings.HasPrefix(arg, "g:"):
 		// T:g:<n>:<dir> → Ctrl+方向键（3/4 指同映射）

@@ -34,7 +34,7 @@ import (
 const preferredPort = 7979
 
 // version 当前版本，与发布仓库 voicekey-dist 根目录的 version.txt 对应
-const version = "0.7.17"
+const version = "0.7.18"
 
 // versionCheckURLs 版本检查地址。fetchLatestVersion 会取所有成功响应中的
 // 最大版本号，单个源陈旧不影响判定。api.github.com 最快最新排首位，
@@ -299,6 +299,7 @@ func handleFrame(s string, conn net.Conn) {
 	recordHistory(string(raw))
 	paste(string(raw), replace)
 }
+
 
 // selfRestartWatchdog 自愈看门狗：启动时未获辅助功能授权则周期性自重启。
 // macOS 对运行中的进程缓存权限查询结果，用户勾选授权后已运行的进程拿不到，
